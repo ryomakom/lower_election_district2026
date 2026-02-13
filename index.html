@@ -52,7 +52,6 @@
     align-items: baseline;
     white-space: nowrap;
   }
-
   .tt-party {
     font-weight: 600;
     width: 2.2em;
@@ -78,29 +77,23 @@
 <script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
 <script>
 (async function main() {
-  // ====== files ======
   const REGIONS_CSV   = "./regions.csv";
   const GEOMETRY_JSON = "./region_geometry.geojson";
   const POINTS_CSV    = "./points.csv";
 
-  // ====== join keys ======
   const REGIONS_ID_COL = "id";
   const GEOM_ID_PROP   = "id";
 
-  // ====== regions columns ======
   const REGION_COLOR_COL = "category";
   const REGION_POPUP_COL = "popup_text";
   const REGION_DISTRICT_COL = "district";
 
-  // ====== points columns ======
-  // NOTE: このデータは経緯度ではなく、geometryと同じ平面座標(x,y)
   const POINT_X_COL = "longitude";
   const POINT_Y_COL = "latitude";
   const POINT_LABEL_COL = "label";
   const POINT_CAT_COL   = "category"; // "party" / "pref"
   const POINT_ID_COL    = "id";
 
-  // ====== colors ======
   const regionColorMap = {
     "prefecture": "#e3e3e3",
     "与党": "#BC3939",
@@ -112,12 +105,13 @@
     return regionColorMap[key] || "#e6e6e6";
   }
 
-  // ====== font sizes (desktop baseline) ======
-  const PREF_FONT_BASE_PX  = 17;    // pref label baseline (desktop-ish)
-  const PARTY_FONT_BASE_PX = 17.6;  // party label baseline (desktop-ish)
+  // desktop baseline sizes
+  const PREF_FONT_BASE_PX  = 17;
+  const PARTY_FONT_BASE_PX = 17.6;
 
-  // 画面幅ベースでスケール（スマホで相対的に大きく見える問題を抑える）
+  // ★ここが重要：幅だけでなく、幅・高さの両方を基準にスケールする
   let baseSvgWidth = null;
+  let baseSvgHeight = null;
 
   const wrap = document.getElementById("wrap");
   const svg = d3.select("#svg");
@@ -131,25 +125,22 @@
 
   const regionsById = new Map(regionsRows.map(d => [String(d[REGIONS_ID_COL]).trim(), d]));
 
-  // geometryが投影済み平面座標なので geoIdentity
   const projection = d3.geoIdentity().reflectY(true);
   const path = d3.geoPath(projection);
 
-  // layers（prefecture下 → district上）
   const g = svg.append("g");
   const gPref     = g.append("g").attr("data-layer", "prefecture");
   const gDistrict = g.append("g").attr("data-layer", "districts");
   const gLabels   = g.append("g").attr("data-layer", "labels");
 
-  // zoom/pan
-  const zoom = d3.zoom()
-    .scaleExtent([1, 12])
-    .on("zoom", (event) => g.attr("transform", event.transform));
-  svg.call(zoom);
+  svg.call(
+    d3.zoom().scaleExtent([1, 12])
+      .on("zoom", (event) => g.attr("transform", event.transform))
+  );
 
   function showTooltip(event, html, bodyFontPx) {
     tooltip
-      .style("font-size", `${bodyFontPx}px`) // 本文はラベルと同サイズに同期
+      .style("font-size", `${bodyFontPx}px`)
       .html(html)
       .style("left", event.clientX + "px")
       .style("top",  event.clientY + "px")
@@ -157,7 +148,6 @@
   }
   function hideTooltip() { tooltip.style("opacity", 0); }
 
-  // popup_text ("自民 加藤貴弘 112618<br>...") → [{party2,name,votes}]
   function parseCandidates(popupHtml) {
     const raw = String(popupHtml ?? "");
     if (!raw) return [];
@@ -178,8 +168,7 @@
 
       if (!/^\d[\d,]*$/.test(votesRaw)) continue;
 
-      const party2 = String(partyRaw).slice(0, 2);
-      out.push({ party2, name: nameRaw, votes: votesRaw });
+      out.push({ party2: String(partyRaw).slice(0, 2), name: nameRaw, votes: votesRaw });
     }
     return out;
   }
@@ -211,12 +200,15 @@
     const { width, height } = wrap.getBoundingClientRect();
     svg.attr("viewBox", `0 0 ${width} ${height}`);
 
-    // 幅基準スケール（初回widthを基準として保存）
+    // 基準を初回に固定
     if (baseSvgWidth == null) baseSvgWidth = width;
-    const scaleRaw = width / baseSvgWidth;
+    if (baseSvgHeight == null) baseSvgHeight = height;
 
-    // スマホで読みやすさを保つため、極端に小さくしすぎない下限も入れる（必要なければ0に）
-    const scale = Math.max(scaleRaw, 0.55);
+    // ★fitSizeの制約（幅・高さの厳しい方）に合わせて縮むようにする
+    const scaleRaw = Math.min(width / baseSvgWidth, height / baseSvgHeight);
+
+    // 必要なら下限（小さくしすぎて読めないのを防ぐ）。不要なら 0 にしてOK。
+    const scale = Math.max(scaleRaw, 0.50);
 
     const prefFontPx  = PREF_FONT_BASE_PX  * scale;
     const partyFontPx = PARTY_FONT_BASE_PX * scale;
@@ -226,7 +218,6 @@
     const prefFeatures = geom.features.filter(f => String(f.properties?.type) === "prefecture");
     const districtFeatures = geom.features.filter(f => String(f.properties?.type) === "district");
 
-    // --- Prefecture polygons (fill only, no popup) ---
     gPref.selectAll("path")
       .data(prefFeatures, f => String(f.properties?.[GEOM_ID_PROP] ?? "").trim())
       .join("path")
@@ -234,7 +225,7 @@
         .attr("d", path)
         .attr("fill", regionColorMap["prefecture"]);
 
-    // 半マス右シフトは「districtセル幅」から推定（座標系に依存するのでここはセル幅方式が正しい）
+    // 半マス右シフト用のセル幅推定（位置だけはセル幅ベースが正しい）
     const districtWidths = districtFeatures
       .map(f => {
         const b = path.bounds(f);
@@ -245,14 +236,12 @@
     const cellPx = districtWidths.length ? districtWidths[Math.floor(districtWidths.length / 2)] : 0;
     const dxHalfCell = cellPx / 2;
 
-    // 都道府県名は「現状より0.5文字分」右（=0.5em）＋3文字補正
     const prefShiftHalfChar = prefFontPx * 0.5;
     function prefLenFix(label) {
       const s = String(label ?? "").trim();
       return (s.length === 3) ? (prefFontPx * 0.5) : 0;
     }
 
-    // --- District polygons (fill only, popupあり) ---
     gDistrict.selectAll("path")
       .data(districtFeatures, f => String(f.properties?.[GEOM_ID_PROP] ?? "").trim())
       .join("path")
@@ -264,10 +253,8 @@
           return getRegionColor(row?.[REGION_COLOR_COL]);
         })
         .on("mousemove", (event, f) => {
-          // 本文：ラベルと同じサイズ（partyFontPx）
-          const bodyFontPx = partyFontPx;
+          const bodyFontPx = partyFontPx;       // 本文＝ラベルと同サイズ
           const titleFontPx = bodyFontPx * 1.15;
-
           const html = buildDistrictTooltip(f, titleFontPx);
           if (html) showTooltip(event, html, bodyFontPx);
         })
