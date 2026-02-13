@@ -1,3 +1,4 @@
+
 <!doctype html>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
@@ -262,11 +263,12 @@ function render() {
       const row = regionsById.get(id);
       if (!row) return;
 
-      const titleFontPx = partyFontPx * 1.15;
+      const bodyFontPx = 14;          // ← 固定サイズ
+      const titleFontPx = 16;         // ← 固定サイズ（少し大きく）
       const html = buildDistrictTooltip(f, titleFontPx);
 
       tooltip
-        .style("font-size", `${partyFontPx}px`)
+        .style("font-size", `${bodyFontPx}px`)
         .html(html)
         .style("left", event.clientX + "px")
         .style("top",  event.clientY + "px")
@@ -321,5 +323,4 @@ function render() {
   }
 })();
 </script>
-
 
