@@ -1,0 +1,311 @@
+<!doctype html>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Projection map (D3) - Flourish compatible</title>
+
+<style>
+  body { margin: 0; font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
+  #wrap { position: relative; width: 100vw; height: 100vh; background: #fff; }
+  svg { width: 100%; height: 100%; display: block; }
+
+  /* Regions: 囲み線は完全除去 */
+  .district { stroke: none; }
+  .prefecture { stroke: none; pointer-events: none; } /* prefectureはホバー/ポップアップ不要 */
+
+  /* Labels only (NO circles) */
+  .point-label {
+    font-weight: 400;
+    text-anchor: middle;
+    dominant-baseline: central;
+    pointer-events: none;
+  }
+
+  /* Tooltip: 白背景＋幅可変＆改行制御 */
+  .tooltip {
+    position: absolute;
+    pointer-events: none;
+    background: #fff;      /* ← 白 */
+    color: #111;           /* ← 黒 */
+    padding: 12px 14px;
+    border-radius: 12px;
+    line-height: 1.35;
+    transform: translate(-50%, calc(-100% - 10px));
+    opacity: 0;
+    transition: opacity 120ms ease;
+    box-shadow: 0 10px 26px rgba(0,0,0,0.18);
+
+    width: max-content;
+    max-width: 720px;
+  }
+
+  .tt-title {
+    font-weight: 700;
+    margin-bottom: 8px;
+    white-space: nowrap;
+  }
+
+  .tt-list { display: flex; flex-direction: column; gap: 4px; }
+
+  /* 1行は折り返さない（不要なところで改行させない） */
+  .tt-row {
+    display: flex;
+    gap: 10px;
+    align-items: baseline;
+    white-space: nowrap;
+  }
+  .tt-party {
+    font-weight: 600;
+    width: 2.2em;            /* 2文字枠 */
+    flex: 0 0 auto;
+  }
+  .tt-name {
+    font-weight: 400;
+    flex: 0 0 auto;
+  }
+  .tt-votes {
+    margin-left: auto;
+    font-variant-numeric: tabular-nums;
+    opacity: 0.9;
+    flex: 0 0 auto;
+  }
+</style>
+
+<div id="wrap">
+  <div id="tooltip" class="tooltip"></div>
+  <svg id="svg" aria-label="projection map"></svg>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
+<script>
+(async function main() {
+  // ====== files ======
+  const REGIONS_CSV   = "./regions.csv";
+  const GEOMETRY_JSON = "./region_geometry.geojson";
+  const POINTS_CSV    = "./points.csv";
+
+  // ====== join keys ======
+  const REGIONS_ID_COL = "id";
+  const GEOM_ID_PROP   = "id";
+
+  // ====== regions columns ======
+  const REGION_COLOR_COL = "category";
+  const REGION_POPUP_COL = "popup_text";
+  const REGION_DISTRICT_COL = "district";
+
+  // ====== points columns ======
+  // NOTE: このデータは経緯度ではなく、geometryと同じ平面座標(x,y)
+  const POINT_X_COL = "longitude";
+  const POINT_Y_COL = "latitude";
+  const POINT_LABEL_COL = "label";
+  const POINT_CAT_COL   = "category"; // "party" / "pref"
+  const POINT_ID_COL    = "id";
+
+  // ====== colors ======
+  const regionColorMap = {
+    "prefecture": "#e3e3e3",
+    "与党": "#BC3939",
+    "野党": "#446093",
+    "その他": "#959595"
+  };
+  function getRegionColor(category) {
+    const key = String(category ?? "").trim();
+    return regionColorMap[key] || "#e6e6e6";
+  }
+
+  // ====== font sizes (見た目基準) ======
+  const PREF_FONT_BASE_PX  = 17;
+  const PARTY_FONT_BASE_PX = 17.6;
+  let baseCellPx = null;
+
+  const wrap = document.getElementById("wrap");
+  const svg = d3.select("#svg");
+  const tooltip = d3.select("#tooltip");
+
+  const [regionsRows, geom, pointsRows] = await Promise.all([
+    d3.csv(REGIONS_CSV, d => d),
+    d3.json(GEOMETRY_JSON),
+    d3.csv(POINTS_CSV, d => d),
+  ]);
+
+  const regionsById = new Map(regionsRows.map(d => [String(d[REGIONS_ID_COL]).trim(), d]));
+
+  // geometryが投影済み平面座標なので geoIdentity
+  const projection = d3.geoIdentity().reflectY(true);
+  const path = d3.geoPath(projection);
+
+  // layers（prefecture下 → district上）
+  const g = svg.append("g");
+  const gPref     = g.append("g").attr("data-layer", "prefecture");
+  const gDistrict = g.append("g").attr("data-layer", "districts");
+  const gLabels   = g.append("g").attr("data-layer", "labels");
+
+  // zoom/pan
+  const zoom = d3.zoom()
+    .scaleExtent([1, 12])
+    .on("zoom", (event) => g.attr("transform", event.transform));
+  svg.call(zoom);
+
+  function showTooltip(event, html, bodyFontPx) {
+    tooltip
+      .style("font-size", `${bodyFontPx}px`)  // ← ラベルと同じサイズ
+      .html(html)
+      .style("left", event.clientX + "px")
+      .style("top",  event.clientY + "px")
+      .style("opacity", 1);
+  }
+  function hideTooltip() { tooltip.style("opacity", 0); }
+
+  // popup_text ("自民 加藤貴弘 112618<br>...") → [{party2,name,votes}]
+  function parseCandidates(popupHtml) {
+    const raw = String(popupHtml ?? "");
+    if (!raw) return [];
+
+    const lines = raw
+      .split(/<br\s*\/?>/i)
+      .map(s => s.replace(/&nbsp;/g, " ").trim())
+      .filter(Boolean);
+
+    const out = [];
+    for (const line of lines) {
+      const parts = line.split(/\s+/).filter(Boolean);
+      if (parts.length < 3) continue;
+
+      const votesRaw = parts[parts.length - 1];
+      const partyRaw = parts[0];
+      const nameRaw  = parts.slice(1, parts.length - 1).join(" ");
+
+      if (!/^\d[\d,]*$/.test(votesRaw)) continue;
+
+      const party2 = String(partyRaw).slice(0, 2);
+      out.push({ party2, name: nameRaw, votes: votesRaw });
+    }
+    return out;
+  }
+
+  function buildDistrictTooltip(f, titleFontPx) {
+    const id = String(f.properties?.[GEOM_ID_PROP] ?? "").trim();
+    const row = regionsById.get(id);
+    if (!row) return null;
+
+    const title = String(row[REGION_DISTRICT_COL] ?? "").trim() || "選挙区";
+    const cands = parseCandidates(row[REGION_POPUP_COL]);
+
+    const listHtml = cands.length
+      ? `<div class="tt-list">
+          ${cands.map(c => `
+            <div class="tt-row">
+              <div class="tt-party">${esc(c.party2)}</div>
+              <div class="tt-name">${esc(c.name)}</div>
+              <div class="tt-votes">${esc(c.votes)}</div>
+            </div>
+          `).join("")}
+        </div>`
+      : `<div class="tt-list"><div class="tt-row" style="opacity:.85">（候補データなし）</div></div>`;
+
+    return `<div class="tt-title" style="font-size:${titleFontPx}px">${esc(title)}</div>${listHtml}`;
+  }
+
+  function render() {
+    const { width, height } = wrap.getBoundingClientRect();
+    svg.attr("viewBox", `0 0 ${width} ${height}`);
+
+    projection.fitSize([width, height], geom);
+
+    const prefFeatures = geom.features.filter(f => String(f.properties?.type) === "prefecture");
+    const districtFeatures = geom.features.filter(f => String(f.properties?.type) === "district");
+
+    // --- Prefecture polygons (fill only, no popup) ---
+    gPref.selectAll("path")
+      .data(prefFeatures, f => String(f.properties?.[GEOM_ID_PROP] ?? "").trim())
+      .join("path")
+        .attr("class", "prefecture")
+        .attr("d", path)
+        .attr("fill", regionColorMap["prefecture"]);
+
+    // ---- 文字スケール（画面縮小に追従）＋半マス右シフト ----
+    const districtWidths = districtFeatures
+      .map(f => {
+        const b = path.bounds(f);
+        return b[1][0] - b[0][0];
+      })
+      .filter(w => Number.isFinite(w) && w > 0)
+      .sort((a,b) => a - b);
+
+    const cellPx = districtWidths.length ? districtWidths[Math.floor(districtWidths.length / 2)] : 0;
+    if (baseCellPx == null && cellPx > 0) baseCellPx = cellPx;
+
+    const scale = (baseCellPx && baseCellPx > 0) ? (cellPx / baseCellPx) : 1;
+    const prefFontPx  = PREF_FONT_BASE_PX  * scale;
+    const partyFontPx = PARTY_FONT_BASE_PX * scale;
+
+    const dxHalfCell = cellPx / 2;
+
+    // 都道府県名は「現状より0.5文字分」右（=0.5em）
+    const prefShiftHalfChar = prefFontPx * 0.5;
+
+    // 3文字補正（必要なら）
+    function prefLenFix(label) {
+      const s = String(label ?? "").trim();
+      return (s.length === 3) ? (prefFontPx * 0.5) : 0;
+    }
+
+    // --- District polygons (fill only, popupあり) ---
+    gDistrict.selectAll("path")
+      .data(districtFeatures, f => String(f.properties?.[GEOM_ID_PROP] ?? "").trim())
+      .join("path")
+        .attr("class", "district")
+        .attr("d", path)
+        .attr("fill", f => {
+          const id = String(f.properties?.[GEOM_ID_PROP] ?? "").trim();
+          const row = regionsById.get(id);
+          return getRegionColor(row?.[REGION_COLOR_COL]);
+        })
+        .on("mousemove", (event, f) => {
+          // 本文：ラベルと同じサイズ（partyFontPx）
+          const bodyFontPx = partyFontPx;
+          const titleFontPx = bodyFontPx * 1.15;
+
+          const html = buildDistrictTooltip(f, titleFontPx);
+          if (html) showTooltip(event, html, bodyFontPx);
+        })
+        .on("mouseleave", hideTooltip);
+
+    const validPoints = pointsRows.filter(d =>
+      Number.isFinite(+d[POINT_X_COL]) && Number.isFinite(+d[POINT_Y_COL])
+    );
+
+    gLabels.selectAll("text")
+      .data(validPoints, d => String(d[POINT_ID_COL] ?? "").trim())
+      .join("text")
+        .attr("class", "point-label")
+        .attr("transform", d => {
+          const p = projection([+d[POINT_X_COL], +d[POINT_Y_COL]]);
+          if (!p) return "translate(-9999,-9999)";
+
+          const cat = String(d[POINT_CAT_COL] ?? "").trim();
+          const label = d[POINT_LABEL_COL] ?? "";
+
+          const extra = (cat === "pref")
+            ? (prefShiftHalfChar + prefLenFix(label))
+            : 0;
+
+          return `translate(${p[0] + dxHalfCell + extra},${p[1]})`;
+        })
+        .text(d => d[POINT_LABEL_COL] ?? "")
+        .style("font-size", d => {
+          const cat = String(d[POINT_CAT_COL] ?? "").trim();
+          return (cat === "pref") ? `${prefFontPx}px` : `${partyFontPx}px`;
+        })
+        .style("fill", d => (String(d[POINT_CAT_COL]).trim() === "pref" ? "#000" : "#fff"));
+  }
+
+  window.addEventListener("resize", render);
+  render();
+
+  function esc(s) {
+    return String(s).replace(/[&<>"']/g, c => ({
+      "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"
+    }[c]));
+  }
+})();
+</script>
