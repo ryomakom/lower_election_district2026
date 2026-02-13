@@ -1,0 +1,2 @@
+# lower_election_district2026
+2026年衆院選小選挙区の結果を表示します
