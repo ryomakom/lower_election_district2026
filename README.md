@@ -6,3 +6,5 @@ https://ryomakom.github.io/lower_election_district2026/
 はじめはFlourishのProjection Mapのテンプレートで[つくってみた](https://public.flourish.studio/visualisation/27616530/)んですが、やはり細かいところ（ラベルの色とかサイズとか）が思い通りに制御できず、不完全燃焼に。どうせならD3で再現できないかと思って、ちゃっぴーと相談しながらつくりました。
 
 D3を私が仕事で使うようになることがあるかどうかは全然見えないんですが、いずれ何かの役に立てばよいですね、ということで。
+
+開票結果のデータは、高知工科大の矢内勇生准教授の[サイト](https://yukiyanai.github.io/jp/resources/)からダウンロードしたものを使わせていただいています。
