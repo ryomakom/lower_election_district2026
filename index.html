@@ -196,98 +196,120 @@
     return `<div class="tt-title" style="font-size:${titleFontPx}px">${esc(title)}</div>${listHtml}`;
   }
 
-  function render() {
-    const { width, height } = wrap.getBoundingClientRect();
-    svg.attr("viewBox", `0 0 ${width} ${height}`);
+function render() {
 
-    // 基準を初回に固定
-    if (baseSvgWidth == null) baseSvgWidth = width;
-    if (baseSvgHeight == null) baseSvgHeight = height;
+  const { width, height } = wrap.getBoundingClientRect();
+  svg.attr("viewBox", `0 0 ${width} ${height}`);
 
-    // ★fitSizeの制約（幅・高さの厳しい方）に合わせて縮むようにする
-    const scaleRaw = Math.min(width / baseSvgWidth, height / baseSvgHeight);
+  // 1. まず地図をフィット
+  projection.fitSize([width, height], geom);
 
-    // 必要なら下限（小さくしすぎて読めないのを防ぐ）。不要なら 0 にしてOK。
-    const scale = Math.max(scaleRaw, 0.50);
+  const prefFeatures = geom.features.filter(f => f.properties.type === "prefecture");
+  const districtFeatures = geom.features.filter(f => f.properties.type === "district");
 
-    const prefFontPx  = PREF_FONT_BASE_PX  * scale;
-    const partyFontPx = PARTY_FONT_BASE_PX * scale;
+  // --------------------------------------------------
+  // ★ district実寸(px)を取得（中央値を使う）
+  // --------------------------------------------------
+  const widths = districtFeatures.map(f => {
+    const b = path.bounds(f);
+    return b[1][0] - b[0][0];
+  }).filter(w => w > 0).sort((a,b)=>a-b);
 
-    projection.fitSize([width, height], geom);
+  const cellPx = widths.length
+    ? widths[Math.floor(widths.length / 2)]
+    : 20; // fallback
 
-    const prefFeatures = geom.features.filter(f => String(f.properties?.type) === "prefecture");
-    const districtFeatures = geom.features.filter(f => String(f.properties?.type) === "district");
+  // --------------------------------------------------
+  // ★ フォントサイズを cellPx のみに依存させる
+  // --------------------------------------------------
+  const partyFontPx = cellPx * 0.42;   // ← 調整可能
+  const prefFontPx  = cellPx * 0.42;
 
-    gPref.selectAll("path")
-      .data(prefFeatures, f => String(f.properties?.[GEOM_ID_PROP] ?? "").trim())
-      .join("path")
-        .attr("class", "prefecture")
-        .attr("d", path)
-        .attr("fill", regionColorMap["prefecture"]);
+  const dxHalfCell = cellPx / 2;
+  const prefShiftHalfChar = prefFontPx * 0.5;
 
-    // 半マス右シフト用のセル幅推定（位置だけはセル幅ベースが正しい）
-    const districtWidths = districtFeatures
-      .map(f => {
-        const b = path.bounds(f);
-        return b[1][0] - b[0][0];
-      })
-      .filter(w => Number.isFinite(w) && w > 0)
-      .sort((a,b) => a - b);
-    const cellPx = districtWidths.length ? districtWidths[Math.floor(districtWidths.length / 2)] : 0;
-    const dxHalfCell = cellPx / 2;
-
-    const prefShiftHalfChar = prefFontPx * 0.5;
-    function prefLenFix(label) {
-      const s = String(label ?? "").trim();
-      return (s.length === 3) ? (prefFontPx * 0.5) : 0;
-    }
-
-    gDistrict.selectAll("path")
-      .data(districtFeatures, f => String(f.properties?.[GEOM_ID_PROP] ?? "").trim())
-      .join("path")
-        .attr("class", "district")
-        .attr("d", path)
-        .attr("fill", f => {
-          const id = String(f.properties?.[GEOM_ID_PROP] ?? "").trim();
-          const row = regionsById.get(id);
-          return getRegionColor(row?.[REGION_COLOR_COL]);
-        })
-        .on("mousemove", (event, f) => {
-          const bodyFontPx = partyFontPx;       // 本文＝ラベルと同サイズ
-          const titleFontPx = bodyFontPx * 1.15;
-          const html = buildDistrictTooltip(f, titleFontPx);
-          if (html) showTooltip(event, html, bodyFontPx);
-        })
-        .on("mouseleave", hideTooltip);
-
-    const validPoints = pointsRows.filter(d =>
-      Number.isFinite(+d[POINT_X_COL]) && Number.isFinite(+d[POINT_Y_COL])
-    );
-
-    gLabels.selectAll("text")
-      .data(validPoints, d => String(d[POINT_ID_COL] ?? "").trim())
-      .join("text")
-        .attr("class", "point-label")
-        .attr("transform", d => {
-          const p = projection([+d[POINT_X_COL], +d[POINT_Y_COL]]);
-          if (!p) return "translate(-9999,-9999)";
-
-          const cat = String(d[POINT_CAT_COL] ?? "").trim();
-          const label = d[POINT_LABEL_COL] ?? "";
-
-          const extra = (cat === "pref")
-            ? (prefShiftHalfChar + prefLenFix(label))
-            : 0;
-
-          return `translate(${p[0] + dxHalfCell + extra},${p[1]})`;
-        })
-        .text(d => d[POINT_LABEL_COL] ?? "")
-        .style("font-size", d => {
-          const cat = String(d[POINT_CAT_COL] ?? "").trim();
-          return (cat === "pref") ? `${prefFontPx}px` : `${partyFontPx}px`;
-        })
-        .style("fill", d => (String(d[POINT_CAT_COL]).trim() === "pref" ? "#000" : "#fff"));
+  function prefLenFix(label) {
+    const s = String(label ?? "").trim();
+    return (s.length === 3) ? (prefFontPx * 0.5) : 0;
   }
+
+  // --------------------------------------------------
+  // prefecture polygons
+  // --------------------------------------------------
+  gPref.selectAll("path")
+    .data(prefFeatures)
+    .join("path")
+    .attr("class","prefecture")
+    .attr("d", path)
+    .attr("fill", "#e3e3e3");
+
+  // --------------------------------------------------
+  // district polygons
+  // --------------------------------------------------
+  gDistrict.selectAll("path")
+    .data(districtFeatures)
+    .join("path")
+    .attr("class","district")
+    .attr("d", path)
+    .attr("fill", f => {
+      const id = String(f.properties.id).trim();
+      const row = regionsById.get(id);
+      return getRegionColor(row?.[REGION_COLOR_COL]);
+    })
+    .on("mousemove", (event, f) => {
+
+      const id = String(f.properties.id).trim();
+      const row = regionsById.get(id);
+      if (!row) return;
+
+      const titleFontPx = partyFontPx * 1.15;
+      const html = buildDistrictTooltip(f, titleFontPx);
+
+      tooltip
+        .style("font-size", `${partyFontPx}px`)
+        .html(html)
+        .style("left", event.clientX + "px")
+        .style("top",  event.clientY + "px")
+        .style("opacity", 1);
+    })
+    .on("mouseleave", hideTooltip);
+
+  // --------------------------------------------------
+  // labels
+  // --------------------------------------------------
+  const validPoints = pointsRows.filter(d =>
+    Number.isFinite(+d[POINT_X_COL]) &&
+    Number.isFinite(+d[POINT_Y_COL])
+  );
+
+  gLabels.selectAll("text")
+    .data(validPoints)
+    .join("text")
+    .attr("class","point-label")
+    .attr("transform", d => {
+      const p = projection([+d[POINT_X_COL], +d[POINT_Y_COL]]);
+      if (!p) return "translate(-9999,-9999)";
+
+      const cat = String(d[POINT_CAT_COL]).trim();
+      const label = d[POINT_LABEL_COL] ?? "";
+
+      const extra = (cat === "pref")
+        ? (prefShiftHalfChar + prefLenFix(label))
+        : 0;
+
+      return `translate(${p[0] + dxHalfCell + extra},${p[1]})`;
+    })
+    .text(d => d[POINT_LABEL_COL] ?? "")
+    .style("font-size", d => {
+      const cat = String(d[POINT_CAT_COL]).trim();
+      return (cat === "pref")
+        ? `${prefFontPx}px`
+        : `${partyFontPx}px`;
+    })
+    .style("fill", d =>
+      String(d[POINT_CAT_COL]).trim() === "pref" ? "#000" : "#fff"
+    );
+}
 
   window.addEventListener("resize", render);
   render();
@@ -299,3 +321,4 @@
   }
 })();
 </script>
+
