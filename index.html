@@ -10,7 +10,7 @@
 
   /* Regions: 囲み線は完全除去 */
   .district { stroke: none; }
-  .prefecture { stroke: none; pointer-events: none; } /* prefectureはホバー/ポップアップ不要 */
+  .prefecture { stroke: none; pointer-events: none; }
 
   /* Labels only (NO circles) */
   .point-label {
@@ -24,8 +24,8 @@
   .tooltip {
     position: absolute;
     pointer-events: none;
-    background: #fff;      /* ← 白 */
-    color: #111;           /* ← 黒 */
+    background: #fff;
+    color: #111;
     padding: 12px 14px;
     border-radius: 12px;
     line-height: 1.35;
@@ -46,16 +46,16 @@
 
   .tt-list { display: flex; flex-direction: column; gap: 4px; }
 
-  /* 1行は折り返さない（不要なところで改行させない） */
   .tt-row {
     display: flex;
     gap: 10px;
     align-items: baseline;
     white-space: nowrap;
   }
+
   .tt-party {
     font-weight: 600;
-    width: 2.2em;            /* 2文字枠 */
+    width: 2.2em;
     flex: 0 0 auto;
   }
   .tt-name {
@@ -112,10 +112,12 @@
     return regionColorMap[key] || "#e6e6e6";
   }
 
-  // ====== font sizes (見た目基準) ======
-  const PREF_FONT_BASE_PX  = 17;
-  const PARTY_FONT_BASE_PX = 17.6;
-  let baseCellPx = null;
+  // ====== font sizes (desktop baseline) ======
+  const PREF_FONT_BASE_PX  = 17;    // pref label baseline (desktop-ish)
+  const PARTY_FONT_BASE_PX = 17.6;  // party label baseline (desktop-ish)
+
+  // 画面幅ベースでスケール（スマホで相対的に大きく見える問題を抑える）
+  let baseSvgWidth = null;
 
   const wrap = document.getElementById("wrap");
   const svg = d3.select("#svg");
@@ -147,7 +149,7 @@
 
   function showTooltip(event, html, bodyFontPx) {
     tooltip
-      .style("font-size", `${bodyFontPx}px`)  // ← ラベルと同じサイズ
+      .style("font-size", `${bodyFontPx}px`) // 本文はラベルと同サイズに同期
       .html(html)
       .style("left", event.clientX + "px")
       .style("top",  event.clientY + "px")
@@ -209,6 +211,16 @@
     const { width, height } = wrap.getBoundingClientRect();
     svg.attr("viewBox", `0 0 ${width} ${height}`);
 
+    // 幅基準スケール（初回widthを基準として保存）
+    if (baseSvgWidth == null) baseSvgWidth = width;
+    const scaleRaw = width / baseSvgWidth;
+
+    // スマホで読みやすさを保つため、極端に小さくしすぎない下限も入れる（必要なければ0に）
+    const scale = Math.max(scaleRaw, 0.55);
+
+    const prefFontPx  = PREF_FONT_BASE_PX  * scale;
+    const partyFontPx = PARTY_FONT_BASE_PX * scale;
+
     projection.fitSize([width, height], geom);
 
     const prefFeatures = geom.features.filter(f => String(f.properties?.type) === "prefecture");
@@ -222,7 +234,7 @@
         .attr("d", path)
         .attr("fill", regionColorMap["prefecture"]);
 
-    // ---- 文字スケール（画面縮小に追従）＋半マス右シフト ----
+    // 半マス右シフトは「districtセル幅」から推定（座標系に依存するのでここはセル幅方式が正しい）
     const districtWidths = districtFeatures
       .map(f => {
         const b = path.bounds(f);
@@ -230,20 +242,11 @@
       })
       .filter(w => Number.isFinite(w) && w > 0)
       .sort((a,b) => a - b);
-
     const cellPx = districtWidths.length ? districtWidths[Math.floor(districtWidths.length / 2)] : 0;
-    if (baseCellPx == null && cellPx > 0) baseCellPx = cellPx;
-
-    const scale = (baseCellPx && baseCellPx > 0) ? (cellPx / baseCellPx) : 1;
-    const prefFontPx  = PREF_FONT_BASE_PX  * scale;
-    const partyFontPx = PARTY_FONT_BASE_PX * scale;
-
     const dxHalfCell = cellPx / 2;
 
-    // 都道府県名は「現状より0.5文字分」右（=0.5em）
+    // 都道府県名は「現状より0.5文字分」右（=0.5em）＋3文字補正
     const prefShiftHalfChar = prefFontPx * 0.5;
-
-    // 3文字補正（必要なら）
     function prefLenFix(label) {
       const s = String(label ?? "").trim();
       return (s.length === 3) ? (prefFontPx * 0.5) : 0;
